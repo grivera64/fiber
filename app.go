@@ -14,6 +14,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+    "io"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -932,6 +933,76 @@ func (app *App) Test(req *http.Request, timeout ...time.Duration) (*http.Respons
 	// Convert raw http response to *http.Response
 	res, err := http.ReadResponse(buffer, req)
 	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	return res, nil
+}
+
+// TestWithInterrupt is used for internal debugging by passing a *http.Request.
+// interruptAfter is the duration before triggering a forced disconnect from the client
+func (app *App) TestWithInterrupt(req *http.Request, interruptAfter time.Duration) (*http.Response, error) {
+	// Add Content-Length if not provided with body
+	if req.Body != http.NoBody && req.Header.Get(HeaderContentLength) == "" {
+		req.Header.Add(HeaderContentLength, strconv.FormatInt(req.ContentLength, 10))
+	}
+
+	// Dump raw http request
+	dump, err := httputil.DumpRequest(req, true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to dump request: %w", err)
+	}
+
+	// Create test connection
+	conn := new(testConn)
+
+	// Write raw http request
+	if _, err := conn.r.Write(dump); err != nil {
+		return nil, fmt.Errorf("failed to write: %w", err)
+	}
+	// prepare the server for the start
+	app.startupProcess()
+
+	// Serve conn to server
+	channel := make(chan error)
+	go func() {
+		var returned bool
+		defer func() {
+			if !returned {
+				channel <- ErrHandlerExited
+			}
+		}()
+
+		channel <- app.server.ServeConn(conn)
+		returned = true
+	}()
+
+	// Wait for callback
+	if interruptAfter >= 0 {
+		select {
+		case err = <-channel:
+		case <-time.After(interruptAfter):
+			conn.Close()
+		}
+	} else {
+		// Without interrupt
+		err = <-channel
+	}
+
+	// Check for errors
+	if err != nil && !errors.Is(err, fasthttp.ErrGetOnly) {
+		return nil, err
+	}
+
+	// Read response
+	buffer := bufio.NewReader(&conn.w)
+
+	// Convert raw http response to *http.Response
+	res, err := http.ReadResponse(buffer, req)
+	if err != nil {
+		if err == io.ErrUnexpectedEOF {
+			return nil, fmt.Errorf("test: no content after %s", interruptAfter)
+		}
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 

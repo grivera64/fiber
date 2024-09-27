@@ -1464,6 +1464,52 @@ func Test_App_Test_timeout(t *testing.T) {
 	require.Equal(t, errors.New("test: timeout error after 100ms"), err)
 }
 
+func Test_App_TestWithInterrupt_no_interrupt_indefinitely(t *testing.T) {
+	t.Parallel()
+	var err error
+	c := make(chan int)
+
+	go func() {
+		defer func() { c <- 0 }()
+		app := New()
+		app.Get("/", func(_ Ctx) error {
+			runtime.Goexit()
+			return nil
+		})
+
+		req := httptest.NewRequest(MethodGet, "/", nil)
+		_, err = app.TestWithInterrupt(req, -1)
+	}()
+
+	tk := time.NewTimer(5 * time.Second)
+	defer tk.Stop()
+
+	select {
+	case <-tk.C:
+		t.Error("hanging test")
+		t.FailNow()
+	case <-c:
+	}
+
+	if err == nil {
+		t.Error("unexpected success request")
+		t.FailNow()
+	}
+}
+
+func Test_App_TestWithInterrupt_interrupt(t *testing.T) {
+	t.Parallel()
+
+	app := New()
+	app.Get("/", func(c Ctx) error {
+		time.Sleep(1 * time.Second)
+		return c.SendString("Should never be called")
+	})
+
+	_, err := app.TestWithInterrupt(httptest.NewRequest(MethodGet, "/", nil), 100*time.Millisecond)
+	require.Equal(t, errors.New("test: no content after 100ms"), err)
+}
+
 func Test_App_SetTLSHandler(t *testing.T) {
 	t.Parallel()
 	tlsHandler := &TLSHandler{clientHelloInfo: &tls.ClientHelloInfo{
