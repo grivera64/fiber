@@ -122,16 +122,16 @@ func (c *core) execFunc() (*Response, error) {
 		resp := AcquireResponse()
 		resp.setClient(c.client)
 		resp.setRequest(c.req)
-		// Copy the fasthttp response into the Fiber response's RawResponse field
-		// instead of taking ownership of the pooled fasthttp.Response (respv). This
-		// allows respv to be safely released back to the fasthttp pool by the
-		// deferred cleanup above, avoiding resource leaks.
-		targetRaw := resp.RawResponse
-		if targetRaw == nil {
-			targetRaw = fasthttp.AcquireResponse()
-		}
-		respv.CopyTo(targetRaw)
-		resp.RawResponse = targetRaw
+
+		// Swap the fasthttp response with the Fiber response's RawResponse field.
+		// This is required, as (*fasthttp.Response).CopyTo() explicitly does not
+		// copy body streams.
+		//
+		// See: https://github.com/valyala/fasthttp/blob/v1.69.0/http.go#L909-L923
+		//
+		// The defer statement above ensures that the original RawResponse
+		// (now stored in respv) will be properly released.
+		resp.RawResponse, respv = respv, resp.RawResponse
 		respChan <- resp
 	}()
 
